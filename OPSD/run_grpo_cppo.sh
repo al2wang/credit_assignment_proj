@@ -38,7 +38,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch \
     --beta 0.0 \
     --loss_type grpo \
     --scale_rewards group \
-    --wandb_project OPSD \
+    --wandb_project GRPO_CPPO \
     --report_to wandb \
     --cppo_alpha 1.0 \
     --cppo_budget 2.5
