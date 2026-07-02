@@ -383,6 +383,9 @@ if __name__ == "__main__":
     train_dataset = split_dataset["train"]
     eval_dataset = split_dataset["test"]
 
+    # TODO: shrink the test run - remove later
+    train_dataset = train_dataset.select(range(100))
+
     # =======================================================
     # Using the overridden CPPOGRPOTrainer
     # =======================================================
