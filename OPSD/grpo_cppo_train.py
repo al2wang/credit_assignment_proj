@@ -140,7 +140,9 @@ class CPPOGRPOTrainer(GRPOTrainer):
             "dynamic_epsilon": [],
             "budget_exceeded": [],
             "token_kl": [],
-            "surrogate_loss": []
+            "surrogate_loss": [],
+            "response_length_k": [], # NEW
+            "rel_log_prob_error": [] # NEW
         }
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -201,28 +203,26 @@ class CPPOGRPOTrainer(GRPOTrainer):
         # Safely buffer metrics without calling wandb directly
         with torch.no_grad():
             budget_exceeded_pct = 1.0 - budget_mask.mean().item()
+            
+            # Response length in thousands (k)
+            mean_length_k = comp_mask.sum(dim=1).float().mean().item() / 1000.0
+            
             self._cppo_metrics["dynamic_epsilon"].append(dynamic_epsilon.mean().item())
             self._cppo_metrics["budget_exceeded"].append(budget_exceeded_pct)
             self._cppo_metrics["token_kl"].append(per_token_kl.mean().item())
             self._cppo_metrics["surrogate_loss"].append(surrogate_loss.mean().item())
+            self._cppo_metrics["response_length_k"].append(mean_length_k)
+            self._cppo_metrics["rel_log_prob_error"].append(per_token_kl.abs().mean().item())
 
         if return_outputs:
             return loss, outputs
         return loss
 
     def log(self, logs: dict, *args, **kwargs):
-        """Override log to inject CPPO metrics safely into the HF logging stream."""
         if len(self._cppo_metrics["dynamic_epsilon"]) > 0:
-            # Average the buffered metrics
-            logs["cppo/mean_dynamic_epsilon"] = sum(self._cppo_metrics["dynamic_epsilon"]) / len(self._cppo_metrics["dynamic_epsilon"])
-            logs["cppo/budget_exceeded_fraction"] = sum(self._cppo_metrics["budget_exceeded"]) / len(self._cppo_metrics["budget_exceeded"])
-            logs["cppo/mean_token_kl"] = sum(self._cppo_metrics["token_kl"]) / len(self._cppo_metrics["token_kl"])
-            logs["cppo/mean_surrogate_loss"] = sum(self._cppo_metrics["surrogate_loss"]) / len(self._cppo_metrics["surrogate_loss"])
-            
-            # Clear buffers
             for key in self._cppo_metrics:
-                self._cppo_metrics[key] = []
-                
+                logs[f"cppo/{key}"] = sum(self._cppo_metrics[key]) / len(self._cppo_metrics[key])
+                self._cppo_metrics[key] = [] # Clear buffer
         super().log(logs, *args, **kwargs)
 
 
