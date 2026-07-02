@@ -210,7 +210,7 @@ class CPPOGRPOTrainer(GRPOTrainer):
             return loss, outputs
         return loss
 
-    def log(self, logs: dict):
+    def log(self, logs: dict, *args, **kwargs):
         """Override log to inject CPPO metrics safely into the HF logging stream."""
         if len(self._cppo_metrics["dynamic_epsilon"]) > 0:
             # Average the buffered metrics
@@ -223,7 +223,7 @@ class CPPOGRPOTrainer(GRPOTrainer):
             for key in self._cppo_metrics:
                 self._cppo_metrics[key] = []
                 
-        super().log(logs)
+        super().log(logs, *args, **kwargs)
 
 
 
