@@ -130,37 +130,41 @@ class CPPOConfig(GRPOConfig):
 
 class CPPOGRPOTrainer(GRPOTrainer):
     """
-    Custom GRPOTrainer implementing CPPO (Cumulative Prefix-divergence Policy Optimization).
-    Updated for the latest TRL API which separates prompt and completion IDs.
+    Custom GRPOTrainer implementing CPPO.
+    Updated for clean WandB syncing and the latest TRL inputs API.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Initialize buffers to hold metrics between logging steps
+        self._cppo_metrics = {
+            "dynamic_epsilon": [],
+            "budget_exceeded": [],
+            "token_kl": [],
+            "surrogate_loss": []
+        }
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        # 1. Unpack the new trl inputs format
         prompt_ids = inputs.get("prompt_input_ids", inputs.get("prompt_ids"))
         completion_ids = inputs.get("completion_input_ids", inputs.get("completion_ids"))
         
         prompt_mask = inputs.get("prompt_attention_mask", torch.ones_like(prompt_ids))
         comp_mask = inputs.get("completion_attention_mask", torch.ones_like(completion_ids))
         
-        # Concatenate for the forward pass
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, comp_mask], dim=1)
         
-        # Ensure advantages broadcast correctly
         advantages = inputs["advantages"]
         if advantages.dim() == 1:
             advantages = advantages.unsqueeze(1) 
 
-        # Forward passes
         outputs = model(input_ids, attention_mask=attention_mask)
         logits = outputs.logits[:, :-1, :]
         
         with torch.inference_mode():
             if self.ref_model is None:
-                # If using PEFT, temporarily disable adapters to act as the reference model
                 with self.accelerator.unwrap_model(model).disable_adapter():
                     ref_outputs = model(input_ids, attention_mask=attention_mask)
             else:
-                # If doing full fine-tuning, use the explicitly loaded reference model
                 ref_outputs = self.ref_model(input_ids, attention_mask=attention_mask)
             
             ref_logits = ref_outputs.logits[:, :-1, :]
@@ -170,57 +174,56 @@ class CPPOGRPOTrainer(GRPOTrainer):
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
         ref_per_token_logps = torch.gather(ref_logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
-        # 2. Isolate only the completion tokens for CPPO 
-        # (We do not penalize or reward the prompt logic)
         prompt_len = prompt_ids.shape[1]
-        
-        # labels is shifted by 1. The first completion token is at index `prompt_len - 1`
         per_token_logps = per_token_logps[:, prompt_len - 1:]
         ref_per_token_logps = ref_per_token_logps[:, prompt_len - 1:]
         
-        # 3. Token-level KL Divergence
         per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
-
-        # 4. Calculate likelihood ratio
         ratio = torch.exp(per_token_logps - per_token_logps.detach())
 
-        # =====================================================================
-        # CPPO MECHANISM (Applied to Completion Only)
-        # =====================================================================
         seq_len = ratio.size(1)
         positions = torch.arange(seq_len, device=ratio.device, dtype=ratio.dtype)
         
-        # A. Position-weighted Epsilon
         epsilon_t = self.args.cliprange * (1.0 + self.args.cppo_alpha * (positions / seq_len))
         epsilon_t = epsilon_t.unsqueeze(0).expand_as(ratio) 
 
-        # B. Cumulative Prefix Budget
         cum_kl = torch.cumsum(per_token_kl, dim=1)
         budget_mask = (cum_kl <= self.args.cppo_budget).float()
         
         dynamic_epsilon = epsilon_t * budget_mask
         clip_frac = torch.clamp(ratio, 1.0 - dynamic_epsilon, 1.0 + dynamic_epsilon)
-        # =====================================================================
 
         surrogate_loss = -torch.min(ratio * advantages, clip_frac * advantages)
         loss = surrogate_loss + self.args.beta * per_token_kl
         
-        # Average over non-padding completion tokens
         loss = (loss * comp_mask).sum() / comp_mask.sum()
 
-        # Custom WandB Logging
-        if self.accelerator.is_main_process and wandb.run is not None:
+        # Safely buffer metrics without calling wandb directly
+        with torch.no_grad():
             budget_exceeded_pct = 1.0 - budget_mask.mean().item()
-            wandb.log({
-                "cppo/mean_dynamic_epsilon": dynamic_epsilon.mean().item(),
-                "cppo/budget_exceeded_fraction": budget_exceeded_pct,
-                "cppo/mean_token_kl": per_token_kl.mean().item(),
-                "cppo/mean_surrogate_loss": surrogate_loss.mean().item(),
-            }, step=self.state.global_step)
+            self._cppo_metrics["dynamic_epsilon"].append(dynamic_epsilon.mean().item())
+            self._cppo_metrics["budget_exceeded"].append(budget_exceeded_pct)
+            self._cppo_metrics["token_kl"].append(per_token_kl.mean().item())
+            self._cppo_metrics["surrogate_loss"].append(surrogate_loss.mean().item())
 
         if return_outputs:
             return loss, outputs
         return loss
+
+    def log(self, logs: dict):
+        """Override log to inject CPPO metrics safely into the HF logging stream."""
+        if len(self._cppo_metrics["dynamic_epsilon"]) > 0:
+            # Average the buffered metrics
+            logs["cppo/mean_dynamic_epsilon"] = sum(self._cppo_metrics["dynamic_epsilon"]) / len(self._cppo_metrics["dynamic_epsilon"])
+            logs["cppo/budget_exceeded_fraction"] = sum(self._cppo_metrics["budget_exceeded"]) / len(self._cppo_metrics["budget_exceeded"])
+            logs["cppo/mean_token_kl"] = sum(self._cppo_metrics["token_kl"]) / len(self._cppo_metrics["token_kl"])
+            logs["cppo/mean_surrogate_loss"] = sum(self._cppo_metrics["surrogate_loss"]) / len(self._cppo_metrics["surrogate_loss"])
+            
+            # Clear buffers
+            for key in self._cppo_metrics:
+                self._cppo_metrics[key] = []
+                
+        super().log(logs)
 
 
 
@@ -358,6 +361,9 @@ if __name__ == "__main__":
         model_kwargs["quantization_config"] = quantization_config
 
     training_args.model_init_kwargs = model_kwargs
+
+    # ADD THIS LINE TO FIX THE CHECKPOINTING WARNING
+    training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
