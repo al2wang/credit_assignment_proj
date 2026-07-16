@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Config
-WANDB_PROJECT = "alexgywang/OPSD" 
+WANDB_PROJECT = "alexgywang/GRPO_CPPO_07020022" 
 SMOOTHING_WINDOW = 5  # For reward smoothing
 
 def fetch_wandb_data():
