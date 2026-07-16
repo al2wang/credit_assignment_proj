@@ -6,3 +6,8 @@ plot_comparison.py
 plot_metrics.py
 plot_qwen3_8b_diagnostics.py
 plot_qwen3_8b_results.py
+plot_experiment_a_is_variance.py
+visualizations/plot_experiment_a_is_variance_2.py
+visualizations/plot_experiment_b_exploration.py
+visualizations/plot_experiment_c_discounting.py
+visualizations/plot_experiment_d_epinet.py
