@@ -1,0 +1,51 @@
+
+
+
+Experiment A:
+- launch_experiment_a.py: The SLURM job submission script to sweep over the baseline and CPPO configurations.
+- prm_mcts_oracle.py: An auxiliary module to simulate or extract the step-level Process Reward Model confidences using Upper Confidence Bounds (UCB) for optimistic exploration.
+- grpo_cppo_train_exp_a.py: The main training script containing the custom loss and logging hooks to extract $\text{Var}(\rho_t)$ across the num_generations dimension.
+
+Experiment B:
+- launch_experiment_b.py: This script sweeps through the three exploration modes, launching parallel jobs to isolate their effects on AIME validation scores and reasoning chain integrity.
+- langevin_exploration.py: Epistemic baseline utility. To implement the continuous exploration baseline, we inject Langevin noise directly into the advantage estimates. This forces the policy to explore by artificially inflating or deflating the gradient signal based on a simulated uncertainty-driven step size.
+- grpo_cppo_train_exp_b.py: Main training script. This script integrates both the Langevin baseline and the PRM-guided bounds (which rely on the prm_mcts_oracle.py we built for Experiment A). We apply Upper Confidence Bounds (UCB) for optimistic exploration to extract the true step-level structural uncertainty.
+
+Experiment C:
+- launch_experiment_c.py
+- grpo_cppo_train_exp_c.py: This file introduces cppo_gamma to the configuration and overrides the standard torch.cumsum with a vectorized exponentially weighted moving average.
+
+Experiment D:
+- launch_experiment_d.py
+- epistemic_prm_oracles.py: This file implements the two distinct formalizations of step-level uncertainty. The UCT baseline utilizes optimistic exploration via upper confidence bounds, while the Epinet models an explicit variance readout over the PRM's hidden states.
+- grpo_cppo_train_exp_d.py: This script integrates the epistemic oracles into the main loss loop, dynamically adjusting the trust region ($\epsilon_t$) based on the specified formalization.
+
+
+
+
+TODO 1: Shorten Context Window Length in GRPO/CPPO
+- launch_experiment_truncation.py: This script sweeps through the four context modes.
+- context_truncation_utils.py: Attention Mask Utilities. This file contains the mathematical logic to manipulate the causal attention mask. Supplying a custom 4D mask to the transformers library forces the scaled dot-product attention (SDPA) backend to calculate the logits strictly on the sub-trajectories you defined.
+- grpo_cppo_train_truncation.py: Main Training Script. This incorporates the custom 4D masks into the forward passes and calculates the high-dimensional Importance Sampling variance required for your analysis.
+
+TODO 2: Learning Position Weights ($w_j$) in the CPPO Bound
+- launch_experiment_weights.py. This script orchestrates the SLURM sweeps across the four weight-learning methodologies.
+- weight_learning_modules.py: This auxiliary module defines the mathematical formulation for computing $w_t$. It takes the model's hidden states and positional indices as inputs to output the dynamic scaling factors.
+- Main Training Script (grpo_cppo_train_weights.py): This file dynamically injects the computed $w_t$ into the CPPO divergence penalty equations. Note that the constraint is $\ell_t = c_t / w_t$. Since the CPPO formulation defines dynamic_epsilon as the clipping boundary, we calculate it natively as $\epsilon_t \propto 1 / w_t$.
+
+TODO 3: Share Knowledge Across Sequences (Hierarchical Advantage & Semantic Replay Buffer)
+To operationalize this, we need to inject an asynchronous buffer into the active training loop. We will split this into three files:
+1. launch_experiment_hierarchical.py : The SLURM job submission script, sweeping across the four ablation modes (Standard GRPO, KNN-Only Baseline, Static Hierarchical, and Dynamic Hierarchical).
+2. semantic_replay_buffer.py : The auxiliary module containing the vector database logic for the $K$-Nearest Neighbors (KNN) baseline and the Process-Value Critic interfaces.
+3. grpo_cppo_train_hierarchical.py : The main training script where the hierarchical advantage equation $A_{i j k}^{\text {Hierarchical }}=A_{i j}^{\text {prompt }}+\beta \widetilde{A}_{i j k}^{\text {chunk }}$ is actively calculated.
+
+Specifically:
+2. Semantic Replay & Critic Interfaces (semantic_replay_buffer.py)
+This file abstracts the off-policy buffer storage and the Process-Value critic. In a full system, the semantic buffer utilizes FAISS, and the critic is a separate neural network running TD updates in the background. Here, we implement the interface layer that the active policy interacts with during compute_loss.
+3. Main Training Script (grpo_cppo_train_hierarchical.py)
+This incorporates the hierarchical advantage equation directly into the gradient logic.
+
+TODO 4: Curriculum Generation
+- launch_experiment_curriculum.py: This script orchestrates the sequential execution of the three curriculum phases, adjusting the maximum generation length and passing the specific phase identifier to the training script.
+- curriculum_dataset_utils.py: Dataset Factorization Utility. This utility handles the structural mapping of the dataset. For a complete run, you would pre-process Openthoughts_math_30k with a teacher model to slice the proofs. This module simulates providing those targeted prompts and rewards based on the current curriculum phase.
+- grpo_cppo_train_curriculum.py: This script adapts the GRPO trainer to handle the shifting advantage landscape. In Phase 3, it explicitly implements the hierarchical advantage equation $A^{\text{Hierarchical}}_{ijk} = A^{\text{prompt}}_{ij} + \beta \widetilde{A}^{\text{chunk}}_{ijk}$.
