@@ -4,7 +4,6 @@ import itertools
 
 if __name__ == '__main__':
 
-    # 1. Define the grid of CPPO hyperparameters to sweep
     alphas = [0.0, 1.0, 2.0]
     budgets = [1.5, 2.5, 5.0, 9999.0]
 
@@ -22,18 +21,17 @@ if __name__ == '__main__':
         run_name = f"qwen4b_cppo_a{alpha}_b{budget}".replace(".", "p")
         current_port = base_port + i
 
-        # Accelerate launch command for 8 GPUs
-        # Note: generation_batch_size is implicitly 1 per GPU, allowing exactly 8 generations across the cluster.
         bash_run_command = (
             f"accelerate launch "
             f"--config_file accelerate.yaml "
             f"--num_processes 8 "
             f"--main_process_port {current_port} "
+            f"--gradient_accumulation_steps 1 "  # <-- FIX: Added back to accelerate launch
             f"grpo_cppo_train.py "
             f"--learning_rate 5e-6 "
             f"--per_device_train_batch_size 1 "
             f"--gradient_accumulation_steps 1 "
-            f"--model_name_or_path ./models/Qwen3-4B " # Reverted to Qwen3-4B to bypass vLLM errors
+            f"--model_name_or_path ./models/Qwen3-4B " 
             f"--output_dir /network/scratch/g/guangyuan.wang/credit_assignment/OPSD/grpo_cppo/results "
             f"--run_config {run_name} "
             f"--num_train_epochs 2 "
@@ -42,19 +40,19 @@ if __name__ == '__main__':
             f"--lora_r 64 "
             f"--lora_alpha 128 "
             f"--lora_target_modules q_proj k_proj v_proj o_proj gate_proj up_proj down_proj "
-            f"--max_completion_length 1024 " # Kept small for the 100-slice test
+            f"--max_completion_length 1024 " 
             f"--num_generations 8 "
             f"--temperature 1.2 "
             f"--use_vllm "
             f"--use_peft "
             f"--vllm_mode colocate "
-            f"--vllm_max_model_len 4096 " # vLLM VRAM constraint
-            f"--logging_steps 1 " # Log frequently since the dataset is only 100 items!
+            f"--vllm_max_model_len 4096 " 
+            f"--logging_steps 1 " 
             f"--save_steps 20 "
             f"--beta 0.0 "
             f"--loss_type grpo "
             f"--scale_rewards group "
-            f"--wandb_project OPSD "
+            f"--wandb_project GRPO_CPPO_07021432 "
             f"--cppo_alpha {alpha} "
             f"--cppo_budget {budget} "
             f"--report_to wandb"
@@ -69,7 +67,10 @@ export CUDA_HOME=$(dirname $(dirname $(which nvcc)))
 export DS_SKIP_CUDA_CHECK=1
 # ------------------------------
 
-source /network/scratch/g/guangyuan.wang/credit_assignment/condaenv/bin/activate
+# --- FIX: Proper headless Conda Activation ---
+eval "$(conda shell.bash hook)"
+conda activate /network/scratch/g/guangyuan.wang/credit_assignment/condaenv
+# ---------------------------------------------
 
 cd {base_dir}
 
@@ -85,7 +86,7 @@ echo "Stop time: $(date +%Y:%m:%d-%H:%M:%S)"
             
         launch_command = (
             f"sbatch --job-name={run_name} "
-            f"--time=04:00:00 " # Lowered time limit since we are only running 100 items
+            f"--time=02:00:00 " 
             f"--nodes=1 "
             f"--gres=gpu:rtx8000:8 "           
             f"-c 32 "                  
