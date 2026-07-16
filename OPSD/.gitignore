@@ -1,3 +1,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+# Local plotting scripts
+plot_comparison.py
+plot_metrics.py
+plot_qwen3_8b_diagnostics.py
+plot_qwen3_8b_results.py
